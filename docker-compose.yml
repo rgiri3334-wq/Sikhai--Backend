@@ -1,0 +1,50 @@
+# ============================================================
+#  docker-compose.yml — Local Development Stack
+#  Run: docker-compose up -d
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ── FastAPI Backend ───────────────────────────────────────
+  api:
+    build: .
+    container_name: sikai_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=true
+    env_file:
+      - .env
+    volumes:
+      - .:/app                        # Hot reload in dev
+      - ./logs:/app/logs
+    depends_on:
+      - redis
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Redis (local, for dev without Upstash) ────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: sikai_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+
+  # ── Nginx Reverse Proxy (optional, for prod-like local) ───
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/conf.d/default.conf
+  #   depends_on:
+  #     - api
+
+volumes:
+  redis_data:
