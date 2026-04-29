@@ -9,10 +9,11 @@ from ai.prompts import (
     build_course_user,
     build_revision_user,
     REVISION_SUMMARY_SYSTEM,
-    SAFETY_CHECK_SYSTEM,
-    SAFETY_CHECK_USER,
 )
-from db.models import CourseOutline, Module, LessonContent
+from db.models import (
+    CourseOutline, Module, LessonContent, ModuleQuiz, ModuleQuizQuestion,
+    HandsOnProject, DownloadableNotes, DownloadableNotesSection,
+)
 from services.cache import cache_get, cache_set
 from config import settings
 
