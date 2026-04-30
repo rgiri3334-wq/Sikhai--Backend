@@ -3,14 +3,16 @@ from typing import Optional, List, Literal, Any
 from datetime import datetime
 import uuid
 
-Level    = Literal["beginner","intermediate","advanced"]
-Grade    = Literal["grade6-8","grade9-10","grade11-12","loksewa","career"]
-Subject  = Literal["science","mathematics","social","loksewa","programming","language","other"]
-QuizType = Literal["mcq","scenario","fill_blank","short_answer","practical"]
-Language = Literal["nepali","english","mixed","bhojpuri"]
+Level    = Literal["beginner", "intermediate", "advanced"]
+Grade    = Literal["grade6-8", "grade9-10", "grade11-12", "loksewa", "career"]
+Subject  = Literal["science", "mathematics", "social", "loksewa", "programming", "language", "other"]
+Language = Literal["nepali", "english", "mixed", "bhojpuri"]
+QuizType = Literal["mcq", "scenario", "fill_blank", "short_answer", "practical"]
 
 
-# ── Auth Models ───────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# AUTH MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class UserRegister(BaseModel):
     name: str = Field(..., min_length=2, max_length=80)
@@ -20,9 +22,15 @@ class UserRegister(BaseModel):
     language: Language = "mixed"
     date_of_birth: Optional[str] = None
 
+    @validator("name")
+    def clean_name(cls, v):
+        return v.strip()
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
 
 class UserProfile(BaseModel):
     id: str
@@ -36,40 +44,78 @@ class UserProfile(BaseModel):
     total_xp: int = 0
     created_at: datetime
 
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserProfile
 
 
-# ── Course Models — V4 Rich Format ───────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# LESSON MODEL — ALL FIELDS INCLUDING YOUTUBE
+# ═══════════════════════════════════════════════════════════════════
 
 class LessonContent(BaseModel):
     lesson_number: int
+
+    # Basic identification
     title: str
     title_np: Optional[str] = None
-    # V3 field (kept for backward compatibility)
+
+    # ── V3 original fields ─────────────────────────────────────
     content_text: str = ""
-    # V4 new fields
-    explanation: str = ""
-    key_concepts: List[str] = []
-    nepal_example: str = ""
-    exercise: str = ""
-    youtube_search: str = ""
-    youtube_summary: str = ""
-    quiz_questions: List[str] = []
-    # Audio/Video
     audio_script: str = ""
     video_script: Optional[str] = None
-    # Legacy
     key_points: List[str] = []
+    nepal_example: str = ""
     duration_minutes: int = 20
+
+    # ── V4 new content fields ──────────────────────────────────
+    explanation: str = ""
+    key_concepts: List[str] = []
+    exercise: str = ""
+
+    # ── V4 YouTube fields (search query from AI) ───────────────
+    youtube_search: str = ""
+    youtube_summary: str = ""
+
+    # ── V5 YouTube fields (real data from YouTube API) ─────────
+    youtube_url: str = ""        # Full video URL: https://youtube.com/watch?v=xxx
+    youtube_embed: str = ""      # Embed URL: https://youtube.com/embed/xxx
+    youtube_title: str = ""      # Video title from YouTube
+    youtube_channel: str = ""    # Channel name from YouTube
+    youtube_duration: str = ""   # Duration string: "4:32"
+    youtube_duration_sec: int = 0  # Duration in seconds: 272
+    youtube_views: str = ""      # Formatted views: "2.3M views"
+    youtube_thumb: str = ""      # Thumbnail URL from YouTube
+
+    # ── V4 quiz fields ─────────────────────────────────────────
+    quiz_questions: List[str] = []
 
     @property
     def main_content(self) -> str:
-        """Returns explanation if available, falls back to content_text."""
+        """Returns best available content — explanation first, then content_text."""
         return self.explanation or self.content_text
 
+    @property
+    def best_youtube_url(self) -> str:
+        """Returns real video URL if available, otherwise search URL."""
+        if self.youtube_url and "watch?v=" in self.youtube_url:
+            return self.youtube_url
+        if self.youtube_search:
+            query = self.youtube_search.replace(" ", "+")
+            return f"https://www.youtube.com/results?search_query={query}&sp=EgQIBBAB"
+        return ""
+
+    @property
+    def has_real_video(self) -> bool:
+        """True if we have a real YouTube video URL (not just a search)."""
+        return bool(self.youtube_url and "watch?v=" in self.youtube_url)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MODULE QUIZ MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class ModuleQuizQuestion(BaseModel):
     question: str
@@ -84,6 +130,10 @@ class ModuleQuiz(BaseModel):
     questions: List[ModuleQuizQuestion] = []
 
 
+# ═══════════════════════════════════════════════════════════════════
+# MODULE MODEL
+# ═══════════════════════════════════════════════════════════════════
+
 class Module(BaseModel):
     module_number: int
     title: str
@@ -93,6 +143,10 @@ class Module(BaseModel):
     module_quiz: Optional[ModuleQuiz] = None
     module_quiz_id: Optional[str] = None
 
+
+# ═══════════════════════════════════════════════════════════════════
+# COURSE EXTRA MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class DownloadableNotesSection(BaseModel):
     heading: str
@@ -112,8 +166,14 @@ class HandsOnProject(BaseModel):
     nepal_context: str = ""
 
 
+# ═══════════════════════════════════════════════════════════════════
+# COURSE OUTLINE MODEL — COMPLETE
+# ═══════════════════════════════════════════════════════════════════
+
 class CourseOutline(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+
+    # Basic info
     topic: str
     title: str
     title_np: Optional[str] = None
@@ -122,21 +182,32 @@ class CourseOutline(BaseModel):
     level: Level
     language: Language = "mixed"
     description: str = ""
+    difficulty: str = ""
+
+    # Stats
     total_modules: int = 0
     total_lessons: int = 0
     estimated_hours: float = 0
-    difficulty: str = ""
-    # V4 new fields
+
+    # Learning structure
     prerequisites: List[str] = []
     learning_outcomes: List[str] = []
+
+    # Course content
+    modules: List[Module] = []
+    revision_summary: str = ""
+
+    # End-of-course content
     hands_on_project: Optional[HandsOnProject] = None
     downloadable_notes: Optional[DownloadableNotes] = None
     next_steps: List[str] = []
-    # Core
-    modules: List[Module] = []
-    revision_summary: str = ""
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
+# ═══════════════════════════════════════════════════════════════════
+# COURSE REQUEST MODEL
+# ═══════════════════════════════════════════════════════════════════
 
 class CourseGenerateRequest(BaseModel):
     topic: str = Field(..., min_length=2, max_length=200)
@@ -152,11 +223,14 @@ class CourseGenerateRequest(BaseModel):
         return v.strip()
 
 
-# ── Tutor Models ─────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# TUTOR MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class ChatMessage(BaseModel):
-    role: Literal["user","assistant"]
+    role: Literal["user", "assistant"]
     content: str
+
 
 class TutorRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000)
@@ -166,6 +240,7 @@ class TutorRequest(BaseModel):
     language: Language = "mixed"
     age_group: Optional[str] = "millennial"
 
+
 class TutorResponse(BaseModel):
     reply: str
     confidence: float = 0.9
@@ -173,13 +248,16 @@ class TutorResponse(BaseModel):
     sources_used: List[str] = []
 
 
-# ── Quiz Models ──────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# QUIZ MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class MCQOption(BaseModel):
-    key: Literal["A","B","C","D"]
+    key: Literal["A", "B", "C", "D"]
     text: str
     is_correct: bool
     why_wrong: Optional[str] = None
+
 
 class QuizQuestion(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -191,7 +269,7 @@ class QuizQuestion(BaseModel):
     topic_tag: str = ""
     frequently_asked: bool = False
     options: Optional[List[MCQOption]] = None
-    correct_answer: str
+    correct_answer: str = ""
     explanation: str = ""
     explanation_np: Optional[str] = None
     memory_tip: str = ""
@@ -201,6 +279,7 @@ class QuizQuestion(BaseModel):
     scenario_context: Optional[str] = None
     model_answer: Optional[str] = None
     marking_rubric: Optional[str] = None
+
 
 class Quiz(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -215,6 +294,7 @@ class Quiz(BaseModel):
     exam_pattern_note: str = ""
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+
 class QuizGenerateRequest(BaseModel):
     topic: str
     grade: Grade
@@ -224,10 +304,12 @@ class QuizGenerateRequest(BaseModel):
     language: Language = "mixed"
     exam_type: str = "general"
 
+
 class QuizSubmission(BaseModel):
     quiz_id: str
     answers: dict
     time_taken_seconds: int = 0
+
 
 class QuizResult(BaseModel):
     quiz_id: str
@@ -241,13 +323,16 @@ class QuizResult(BaseModel):
     detailed_feedback: List[dict] = []
 
 
-# ── Progress Models ──────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+# PROGRESS MODELS
+# ═══════════════════════════════════════════════════════════════════
 
 class LessonComplete(BaseModel):
     course_id: str
     module_number: int = 1
     lesson_number: int
     time_spent_seconds: int = 60
+
 
 class SuccessResponse(BaseModel):
     success: bool = True
