@@ -33,63 +33,46 @@ async def generate_course(
     user_id: Optional[str] = None,
     exam_type: Optional[str] = None,
 ) -> CourseOutline:
-    """
-    Generate a complete AI-powered course for a Nepal student.
 
-    Now supports:
-    - Age-adaptive content tone (genz/millennial/genx/senior)
-    - Exam-specific mode (see/loksewa/ioe/mecee/tsc/nrb)
-    - Multi-language output (mixed/nepali/english/bhojpuri)
-    - Strict Nepali language (no Hindi words)
-    - Specific Nepal examples in every lesson
-    """
-
-    # ── Step 1: Safety Check ─────────────────────────────────────
+    # Safety check
     safety = await check_content_safety(topic)
     if not safety.get("safe", True):
-        reason = safety.get("reason", "Topic not suitable for educational platform")
-        raise ValueError(f"Topic not suitable: {reason}")
+        raise ValueError(f"Topic not suitable: {safety.get('reason', 'content policy')}")
 
-    # ── Step 2: Cache Check ───────────────────────────────────────
-    cache_key = f"course:v2:{topic.lower().strip()}:{grade}:{level}:{language}:{age_group}:{exam_type or 'general'}"
+    # Cache check — v5 key so old cached courses are ignored
+    cache_key = f"course:v5:{topic.lower().strip()}:{grade}:{level}:{language}:{age_group}:{exam_type or 'general'}"
     cached = await cache_get(cache_key)
     if cached:
         log.info(f"Cache hit: '{topic}'")
-        return CourseOutline(**cached)
+        try:
+            return CourseOutline(**cached)
+        except Exception as e:
+            log.warning(f"Cache parse failed, regenerating: {e}")
 
-    # ── Step 3: Build Prompts ─────────────────────────────────────
-    log.info(f"Generating course: '{topic}' | {grade} | {level} | {language} | age={age_group} | exam={exam_type}")
+    log.info(f"Generating: '{topic}' | {grade} | {level} | lang={language} | age={age_group}")
 
     system_prompt = build_course_system(exam_specific=bool(exam_type))
     user_prompt   = build_course_user(
-        topic=topic,
-        grade=grade,
-        level=level,
-        language=language,
-        age_group=age_group,
+        topic=topic, grade=grade, level=level,
+        language=language, age_group=age_group,
         exam_type=exam_type,
     )
 
-    # ── Step 4: Generate Course from AI ──────────────────────────
     raw = await llm_complete_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         max_tokens=settings.max_tokens_course,
     )
 
-    # ── Step 5: Parse Response ────────────────────────────────────
     course = _parse_course(raw, topic, grade, level, language, age_group)
 
-    # ── Step 6: Generate Revision Summary ────────────────────────
+    # Revision summary
     try:
         revision = await llm_complete(
             system_prompt=REVISION_SUMMARY_SYSTEM,
             user_prompt=build_revision_user(
-                topic=topic,
-                grade=grade,
-                level=level,
-                language=language,
-                exam_type=exam_type or "general",
+                topic=topic, grade=grade, level=level,
+                language=language, exam_type=exam_type or "general",
             ),
             model=settings.groq_model_fast,
             max_tokens=600,
@@ -97,18 +80,15 @@ async def generate_course(
         )
         course.revision_summary = revision
     except Exception as e:
-        log.warning(f"Revision summary generation failed: {e}")
-        # Don't fail the whole course just because revision failed
+        log.warning(f"Revision summary failed: {e}")
 
-    # ── Step 7: Cache Result ──────────────────────────────────────
     await cache_set(cache_key, course.dict(), ttl=settings.cache_ttl_course)
-    log.info(f"Course ready: {course.total_modules} modules, {course.total_lessons} lessons — '{course.title}'")
-
+    log.info(f"Done: '{course.title}' — {course.total_modules} modules, {course.total_lessons} lessons")
     return course
 
 
 # ═══════════════════════════════════════════════════════════════════
-# COURSE PARSER
+# COURSE PARSER — READS ALL V4 FIELDS
 # ═══════════════════════════════════════════════════════════════════
 
 def _parse_course(
@@ -120,74 +100,178 @@ def _parse_course(
     age_group: str,
 ) -> CourseOutline:
     """
-    Parse raw AI JSON response into a structured CourseOutline object.
-    Handles missing/malformed fields gracefully.
+    Parse AI JSON into CourseOutline.
+    Reads ALL V4 fields: explanation, key_concepts, exercise,
+    youtube_search, youtube_summary, quiz_questions,
+    module_quiz, hands_on_project, downloadable_notes, next_steps.
     """
-    modules      = []
+    modules       = []
     total_lessons = 0
 
     for m_data in raw.get("modules", []):
         lessons = []
 
         for l_data in m_data.get("lessons", []):
-            # Parse and validate each lesson field
-            content_text = l_data.get("content_text", "")
-            audio_script = l_data.get("audio_script", "")
-            key_points   = l_data.get("key_points", [])
-            nepal_example = l_data.get("nepal_example", "")
-            duration     = l_data.get("duration_minutes", 10)
 
-            # Validate minimum content quality
-            if len(content_text) < 100:
-                log.warning(f"Short lesson content detected: '{l_data.get('title', 'unknown')}' — {len(content_text)} chars")
+            # ── Read ALL lesson fields ──────────────────────────
+            explanation     = str(l_data.get("explanation", ""))
+            content_text    = str(l_data.get("content_text", ""))
+            audio_script    = str(l_data.get("audio_script", ""))
+            video_script    = l_data.get("video_script", None)
+            nepal_example   = str(l_data.get("nepal_example", ""))
+            exercise        = str(l_data.get("exercise", ""))
+            youtube_search  = str(l_data.get("youtube_search", ""))
+            youtube_summary = str(l_data.get("youtube_summary", ""))
+            duration        = l_data.get("duration_minutes", 20)
+
+            # key_concepts (new field)
+            key_concepts = l_data.get("key_concepts", [])
+            if not isinstance(key_concepts, list):
+                key_concepts = []
+            key_concepts = [str(k) for k in key_concepts if k]
+
+            # key_points (legacy field)
+            key_points = l_data.get("key_points", [])
+            if not isinstance(key_points, list):
+                key_points = []
+            key_points = [str(k) for k in key_points if k]
+
+            # quiz_questions (new field)
+            quiz_questions = l_data.get("quiz_questions", [])
+            if not isinstance(quiz_questions, list):
+                quiz_questions = []
+            quiz_questions = [str(q) for q in quiz_questions if q]
+
+            # Use explanation as primary content, fall back to content_text
+            main_content = explanation or content_text
+            if len(main_content) < 50:
+                log.warning(f"Short content for '{l_data.get('title', '?')}': {len(main_content)} chars")
 
             lesson = LessonContent(
-                lesson_number=int(l_data.get("lesson_number", total_lessons + 1)),
-                title=l_data.get("title", f"Lesson {total_lessons + 1}"),
-                title_np=l_data.get("title_np"),
-                content_text=content_text,
-                audio_script=audio_script,
-                video_script=l_data.get("video_script"),
-                key_points=key_points if isinstance(key_points, list) else [],
-                nepal_example=nepal_example,
-                duration_minutes=int(duration) if isinstance(duration, (int, float)) else 10,
+                lesson_number   = int(l_data.get("lesson_number", total_lessons + 1)),
+                title           = str(l_data.get("title", f"Lesson {total_lessons + 1}")),
+                title_np        = l_data.get("title_np", None),
+                # V4 new fields
+                explanation     = explanation,
+                key_concepts    = key_concepts,
+                exercise        = exercise,
+                youtube_search  = youtube_search,
+                youtube_summary = youtube_summary,
+                quiz_questions  = quiz_questions,
+                # Existing fields
+                content_text    = content_text or explanation,
+                audio_script    = audio_script,
+                video_script    = video_script,
+                nepal_example   = nepal_example,
+                key_points      = key_points or key_concepts,
+                duration_minutes = int(duration) if isinstance(duration, (int, float)) else 20,
             )
             lessons.append(lesson)
             total_lessons += 1
 
-        module = Module(
-            module_number=int(m_data.get("module_number", len(modules) + 1)),
-            title=m_data.get("title", f"Module {len(modules) + 1}"),
-            title_np=m_data.get("title_np"),
-            description=m_data.get("description", ""),
-            lessons=lessons,
+        # ── Parse module quiz ───────────────────────────────────
+        module_quiz = None
+        mq_data = m_data.get("module_quiz")
+        if mq_data and isinstance(mq_data, dict):
+            mq_questions = []
+            for q in mq_data.get("questions", []):
+                opts = q.get("options", [])
+                if not isinstance(opts, list):
+                    opts = []
+                mq_questions.append(ModuleQuizQuestion(
+                    question    = str(q.get("question", "")),
+                    type        = str(q.get("type", "mcq")),
+                    options     = [str(o) for o in opts],
+                    correct     = str(q.get("correct", "")),
+                    explanation = str(q.get("explanation", "")),
+                ))
+            module_quiz = ModuleQuiz(
+                title     = str(mq_data.get("title", "Module Quiz")),
+                questions = mq_questions,
+            )
+
+        modules.append(Module(
+            module_number = int(m_data.get("module_number", len(modules) + 1)),
+            title         = str(m_data.get("title", f"Module {len(modules) + 1}")),
+            title_np      = m_data.get("title_np", None),
+            description   = str(m_data.get("description", "")),
+            lessons       = lessons,
+            module_quiz   = module_quiz,
+        ))
+
+    # ── Parse hands-on project ──────────────────────────────────
+    hands_on_project = None
+    proj = raw.get("hands_on_project")
+    if proj and isinstance(proj, dict) and proj.get("title"):
+        steps = proj.get("steps", [])
+        if not isinstance(steps, list):
+            steps = []
+        hands_on_project = HandsOnProject(
+            title         = str(proj.get("title", "")),
+            description   = str(proj.get("description", "")),
+            steps         = [str(s) for s in steps],
+            deliverable   = str(proj.get("deliverable", "")),
+            nepal_context = str(proj.get("nepal_context", "")),
         )
-        modules.append(module)
 
-    # Detect subject from title and topic
-    subject = _detect_subject(raw.get("subject", "other"), topic)
+    # ── Parse downloadable notes ────────────────────────────────
+    downloadable_notes = None
+    notes = raw.get("downloadable_notes")
+    if notes and isinstance(notes, dict):
+        sections = []
+        for sec in notes.get("sections", []):
+            pts = sec.get("points", [])
+            if not isinstance(pts, list):
+                pts = []
+            sections.append(DownloadableNotesSection(
+                heading = str(sec.get("heading", "")),
+                points  = [str(p) for p in pts],
+            ))
+        if sections:
+            downloadable_notes = DownloadableNotes(
+                title    = str(notes.get("title", "Course Summary Notes")),
+                sections = sections,
+            )
 
-    # Calculate estimated hours if not provided
+    # ── Parse course-level fields ───────────────────────────────
+    prerequisites = raw.get("prerequisites", [])
+    if not isinstance(prerequisites, list):
+        prerequisites = []
+
+    learning_outcomes = raw.get("learning_outcomes", [])
+    if not isinstance(learning_outcomes, list):
+        learning_outcomes = []
+
+    next_steps = raw.get("next_steps", [])
+    if not isinstance(next_steps, list):
+        next_steps = []
+
     estimated_hours = raw.get("estimated_hours")
-    if not estimated_hours or not isinstance(estimated_hours, (int, float)):
+    if not isinstance(estimated_hours, (int, float)):
         estimated_hours = round(total_lessons * 0.4, 1)
 
     return CourseOutline(
-        id=str(uuid.uuid4()),
-        topic=topic,
-        title=raw.get("title", f"{topic} — Complete Course"),
-        title_np=raw.get("title_np"),
-        subject=subject,
-        grade=grade,
-        level=level,
-        language=language,
-        description=raw.get("description", ""),
-        total_modules=len(modules),
-        total_lessons=total_lessons,
-        estimated_hours=float(estimated_hours),
-        modules=modules,
-        revision_summary=raw.get("revision_summary", ""),
-        created_at=datetime.utcnow(),
+        id                 = str(uuid.uuid4()),
+        topic              = topic,
+        title              = str(raw.get("title", f"{topic} — Complete Course")),
+        title_np           = raw.get("title_np", None),
+        subject            = _detect_subject(raw.get("subject", "other"), topic),
+        grade              = grade,
+        level              = level,
+        language           = language,
+        description        = str(raw.get("description", "")),
+        difficulty         = str(raw.get("difficulty", level)),
+        total_modules      = len(modules),
+        total_lessons      = total_lessons,
+        estimated_hours    = float(estimated_hours),
+        prerequisites      = [str(p) for p in prerequisites],
+        learning_outcomes  = [str(o) for o in learning_outcomes],
+        hands_on_project   = hands_on_project,
+        downloadable_notes = downloadable_notes,
+        next_steps         = [str(s) for s in next_steps],
+        modules            = modules,
+        revision_summary   = str(raw.get("revision_summary", "")),
+        created_at         = datetime.utcnow(),
     )
 
 
@@ -196,34 +280,16 @@ def _parse_course(
 # ═══════════════════════════════════════════════════════════════════
 
 def _detect_subject(ai_subject: str, topic: str) -> str:
-    """
-    Determine the subject category from AI output and topic text.
-    Returns one of the valid subject enum values.
-    """
-    valid_subjects = {
-        "science", "mathematics", "social", "loksewa",
-        "programming", "language", "other",
-    }
-
-    # If AI gave a valid subject — use it
-    if ai_subject and ai_subject.lower() in valid_subjects:
-        return ai_subject.lower()
-
-    # Auto-detect from topic text
-    topic_lower = topic.lower()
-    if any(w in topic_lower for w in ["math", "algebra", "calculus", "trigon", "geometry", "गणित"]):
-        return "mathematics"
-    if any(w in topic_lower for w in ["science", "biology", "chemistry", "physics", "विज्ञान"]):
-        return "science"
-    if any(w in topic_lower for w in ["loksewa", "lok sewa", "psc", "kharidar", "nayab", "section officer", "civil service"]):
-        return "loksewa"
-    if any(w in topic_lower for w in ["python", "javascript", "programming", "code", "algorithm", "database", "html"]):
-        return "programming"
-    if any(w in topic_lower for w in ["nepal", "history", "geography", "social", "civics", "economics", "सामाजिक"]):
-        return "social"
-    if any(w in topic_lower for w in ["english", "grammar", "writing", "literature", "language", "nepali", "नेपाली"]):
-        return "language"
-
+    valid = {"science","mathematics","social","loksewa","programming","language","other"}
+    if ai_subject and str(ai_subject).lower() in valid:
+        return str(ai_subject).lower()
+    t = topic.lower()
+    if any(w in t for w in ["math","algebra","calculus","trigon","geometry","गणित"]):  return "mathematics"
+    if any(w in t for w in ["science","biology","chemistry","physics","विज्ञान"]):     return "science"
+    if any(w in t for w in ["loksewa","lok sewa","psc","kharidar","nayab"]):           return "loksewa"
+    if any(w in t for w in ["python","javascript","programming","code","html"]):       return "programming"
+    if any(w in t for w in ["nepal","history","geography","social","civics"]):         return "social"
+    if any(w in t for w in ["english","grammar","writing","literature","nepali"]):     return "language"
     return "other"
 
 
@@ -232,16 +298,9 @@ def _detect_subject(ai_subject: str, topic: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
-    """
-    Save generated course to Supabase in background.
-    Called as a background task after course generation —
-    so the user gets their course immediately without waiting for DB.
-    """
     from db.client import get_db
     db = get_db()
-
     try:
-        # Save course record
         db.table("courses").upsert({
             "id":               course.id,
             "user_id":          user_id,
@@ -259,7 +318,6 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
             "revision_summary": course.revision_summary,
         }).execute()
 
-        # Save each module and its lessons
         for module in course.modules:
             mod_id = str(uuid.uuid4())
             db.table("modules").insert({
@@ -273,24 +331,21 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
 
             for lesson in module.lessons:
                 db.table("lessons").insert({
-                    "id":              str(uuid.uuid4()),
-                    "module_id":       mod_id,
-                    "course_id":       course.id,
-                    "lesson_number":   lesson.lesson_number,
-                    "title":           lesson.title,
-                    "title_np":        lesson.title_np,
-                    "content_text":    lesson.content_text,
-                    "audio_script":    lesson.audio_script,
-                    "video_script":    lesson.video_script,
-                    "key_points":      lesson.key_points,
-                    "nepal_example":   lesson.nepal_example,
+                    "id":               str(uuid.uuid4()),
+                    "module_id":        mod_id,
+                    "course_id":        course.id,
+                    "lesson_number":    lesson.lesson_number,
+                    "title":            lesson.title,
+                    "title_np":         lesson.title_np,
+                    "content_text":     lesson.explanation or lesson.content_text,
+                    "audio_script":     lesson.audio_script,
+                    "video_script":     lesson.video_script,
+                    "key_points":       lesson.key_concepts or lesson.key_points,
+                    "nepal_example":    lesson.nepal_example,
                     "duration_minutes": lesson.duration_minutes,
                 }).execute()
 
-        log.info(f"Course saved to DB: {course.id} — '{course.title}'")
-
+        log.info(f"Saved: {course.id} — '{course.title}'")
     except Exception as e:
-        log.error(f"Course save failed for {course.id}: {e}")
-        # Don't raise — this is a background task
-
+        log.error(f"DB save failed {course.id}: {e}")
     return course.id
