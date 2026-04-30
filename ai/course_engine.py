@@ -1,5 +1,6 @@
 import uuid
 import logging
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -39,8 +40,8 @@ async def generate_course(
     if not safety.get("safe", True):
         raise ValueError(f"Topic not suitable: {safety.get('reason', 'content policy')}")
 
-    # Cache check — v6 key forces fresh generation, ignores all old cache
-    cache_key = f"course:v6:{topic.lower().strip()}:{grade}:{level}:{language}:{age_group}:{exam_type or 'general'}"
+    # Cache — v7 key so all old caches are bypassed
+    cache_key = f"course:v7:{topic.lower().strip()}:{grade}:{level}:{language}:{age_group}:{exam_type or 'general'}"
     cached = await cache_get(cache_key)
     if cached:
         log.info(f"Cache hit: '{topic}'")
@@ -51,13 +52,13 @@ async def generate_course(
 
     log.info(f"Generating: '{topic}' | {grade} | {level} | lang={language} | age={age_group}")
 
+    # Build and call AI
     system_prompt = build_course_system(exam_specific=bool(exam_type))
     user_prompt   = build_course_user(
         topic=topic, grade=grade, level=level,
         language=language, age_group=age_group,
         exam_type=exam_type,
     )
-
     raw = await llm_complete_json(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -65,6 +66,9 @@ async def generate_course(
     )
 
     course = _parse_course(raw, topic, grade, level, language, age_group)
+
+    # Enrich lessons with real YouTube videos
+    await _enrich_with_youtube(course, topic, grade, language)
 
     # Revision summary
     try:
@@ -88,7 +92,50 @@ async def generate_course(
 
 
 # ═══════════════════════════════════════════════════════════════════
-# COURSE PARSER — READS ALL V4 FIELDS
+# YOUTUBE ENRICHMENT
+# ═══════════════════════════════════════════════════════════════════
+
+async def _enrich_with_youtube(course: CourseOutline, topic: str, grade: str, language: str):
+    """
+    Find real 4-6 minute YouTube videos for each lesson.
+    Runs concurrently for speed. Fails silently if API unavailable.
+    """
+    try:
+        from services.youtube_service import find_best_video
+
+        async def enrich_one(lesson: LessonContent):
+            if not lesson.youtube_search:
+                return
+            try:
+                video = await find_best_video(
+                    search_query=lesson.youtube_search,
+                    topic=topic,
+                    grade=grade,
+                    language=language,
+                )
+                lesson.youtube_url          = video.get("url", "")
+                lesson.youtube_embed        = video.get("embed_url", "") or ""
+                lesson.youtube_title        = video.get("title", "")
+                lesson.youtube_channel      = video.get("channel", "")
+                lesson.youtube_duration     = video.get("duration_str", "")
+                lesson.youtube_duration_sec = video.get("duration_sec", 0)
+                lesson.youtube_views        = video.get("view_count_str", "")
+                lesson.youtube_thumb        = video.get("thumbnail", "")
+            except Exception as e:
+                log.debug(f"YouTube enrich failed for '{lesson.title}': {e}")
+
+        all_lessons = [l for mod in course.modules for l in mod.lessons]
+        await asyncio.gather(*[enrich_one(l) for l in all_lessons], return_exceptions=True)
+        log.info(f"YouTube enrichment done: {len(all_lessons)} lessons processed")
+
+    except ImportError:
+        log.info("YouTube service not available — using search URL fallback")
+    except Exception as e:
+        log.warning(f"YouTube enrichment failed (non-critical): {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# COURSE PARSER — READS ALL FIELDS FROM AI RESPONSE
 # ═══════════════════════════════════════════════════════════════════
 
 def _parse_course(
@@ -99,6 +146,7 @@ def _parse_course(
     language: str,
     age_group: str,
 ) -> CourseOutline:
+
     modules       = []
     total_lessons = 0
 
@@ -106,7 +154,7 @@ def _parse_course(
         lessons = []
 
         for l_data in m_data.get("lessons", []):
-
+            # Content fields
             explanation     = str(l_data.get("explanation", ""))
             content_text    = str(l_data.get("content_text", ""))
             audio_script    = str(l_data.get("audio_script", ""))
@@ -117,6 +165,7 @@ def _parse_course(
             youtube_summary = str(l_data.get("youtube_summary", ""))
             duration        = l_data.get("duration_minutes", 20)
 
+            # List fields
             key_concepts = l_data.get("key_concepts", [])
             if not isinstance(key_concepts, list): key_concepts = []
             key_concepts = [str(k) for k in key_concepts if k]
@@ -129,25 +178,33 @@ def _parse_course(
             if not isinstance(quiz_questions, list): quiz_questions = []
             quiz_questions = [str(q) for q in quiz_questions if q]
 
-            main_content = explanation or content_text
-            if len(main_content) < 50:
-                log.warning(f"Short content for '{l_data.get('title','?')}': {len(main_content)} chars")
-
             lesson = LessonContent(
-                lesson_number   = int(l_data.get("lesson_number", total_lessons + 1)),
-                title           = str(l_data.get("title", f"Lesson {total_lessons + 1}")),
-                title_np        = l_data.get("title_np", None),
-                explanation     = explanation,
-                key_concepts    = key_concepts,
-                exercise        = exercise,
-                youtube_search  = youtube_search,
-                youtube_summary = youtube_summary,
-                quiz_questions  = quiz_questions,
-                content_text    = content_text or explanation,
-                audio_script    = audio_script,
-                video_script    = video_script,
-                nepal_example   = nepal_example,
-                key_points      = key_points or key_concepts,
+                lesson_number    = int(l_data.get("lesson_number", total_lessons + 1)),
+                title            = str(l_data.get("title", f"Lesson {total_lessons + 1}")),
+                title_np         = l_data.get("title_np", None),
+                # Content
+                explanation      = explanation,
+                content_text     = content_text or explanation,
+                audio_script     = audio_script,
+                video_script     = video_script,
+                nepal_example    = nepal_example,
+                exercise         = exercise,
+                # AI-generated YouTube search query
+                youtube_search   = youtube_search,
+                youtube_summary  = youtube_summary,
+                # Real YouTube data — filled by _enrich_with_youtube()
+                youtube_url      = "",
+                youtube_embed    = "",
+                youtube_title    = "",
+                youtube_channel  = "",
+                youtube_duration = "",
+                youtube_duration_sec = 0,
+                youtube_views    = "",
+                youtube_thumb    = "",
+                # Lists
+                key_concepts     = key_concepts,
+                key_points       = key_points or key_concepts,
+                quiz_questions   = quiz_questions,
                 duration_minutes = int(duration) if isinstance(duration, (int, float)) else 20,
             )
             lessons.append(lesson)
@@ -214,14 +271,10 @@ def _parse_course(
                 sections = sections,
             )
 
-    prerequisites = raw.get("prerequisites", [])
-    if not isinstance(prerequisites, list): prerequisites = []
-
-    learning_outcomes = raw.get("learning_outcomes", [])
-    if not isinstance(learning_outcomes, list): learning_outcomes = []
-
-    next_steps = raw.get("next_steps", [])
-    if not isinstance(next_steps, list): next_steps = []
+    # Course-level lists
+    def safe_list(val):
+        if isinstance(val, list): return [str(x) for x in val if x]
+        return []
 
     estimated_hours = raw.get("estimated_hours")
     if not isinstance(estimated_hours, (int, float)):
@@ -241,11 +294,11 @@ def _parse_course(
         total_modules      = len(modules),
         total_lessons      = total_lessons,
         estimated_hours    = float(estimated_hours),
-        prerequisites      = [str(p) for p in prerequisites],
-        learning_outcomes  = [str(o) for o in learning_outcomes],
+        prerequisites      = safe_list(raw.get("prerequisites")),
+        learning_outcomes  = safe_list(raw.get("learning_outcomes")),
         hands_on_project   = hands_on_project,
         downloadable_notes = downloadable_notes,
-        next_steps         = [str(s) for s in next_steps],
+        next_steps         = safe_list(raw.get("next_steps")),
         modules            = modules,
         revision_summary   = str(raw.get("revision_summary", "")),
         created_at         = datetime.utcnow(),
@@ -271,18 +324,14 @@ def _detect_subject(ai_subject: str, topic: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SAVE COURSE TO DATABASE — ALL NEW FIELDS INCLUDED
+# SAVE TO DATABASE — ALL FIELDS INCLUDING YOUTUBE
 # ═══════════════════════════════════════════════════════════════════
 
 async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
-    """
-    Save generated course to Supabase.
-    Saves ALL V4 fields so courses load with full content every time.
-    """
     from db.client import get_db
     db = get_db()
     try:
-        # Save course record
+        # Save course
         db.table("courses").upsert({
             "id":               course.id,
             "user_id":          user_id,
@@ -314,31 +363,38 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
 
             for lesson in module.lessons:
                 db.table("lessons").insert({
-                    "id":               str(uuid.uuid4()),
-                    "module_id":        mod_id,
-                    "course_id":        course.id,
-                    "lesson_number":    lesson.lesson_number,
-                    "title":            lesson.title,
-                    "title_np":         lesson.title_np,
-                    # ── ALL V4 NEW FIELDS ───────────────────────
-                    "content_text":     lesson.explanation or lesson.content_text,
-                    "explanation":      lesson.explanation,
-                    "key_concepts":     lesson.key_concepts,
-                    "exercise":         lesson.exercise,
-                    "youtube_search":   lesson.youtube_search,
-                    "youtube_summary":  lesson.youtube_summary,
-                    "quiz_questions":   lesson.quiz_questions,
-                    # ── EXISTING FIELDS ─────────────────────────
-                    "audio_script":     lesson.audio_script,
-                    "video_script":     lesson.video_script,
-                    "key_points":       lesson.key_concepts or lesson.key_points,
-                    "nepal_example":    lesson.nepal_example,
-                    "duration_minutes": lesson.duration_minutes,
+                    "id":                  str(uuid.uuid4()),
+                    "module_id":           mod_id,
+                    "course_id":           course.id,
+                    "lesson_number":       lesson.lesson_number,
+                    "title":               lesson.title,
+                    "title_np":            lesson.title_np,
+                    # ── V3 original ─────────────────────────────
+                    "content_text":        lesson.explanation or lesson.content_text,
+                    "audio_script":        lesson.audio_script,
+                    "video_script":        lesson.video_script,
+                    "key_points":          lesson.key_concepts or lesson.key_points,
+                    "nepal_example":       lesson.nepal_example,
+                    "duration_minutes":    lesson.duration_minutes,
+                    # ── V4 content fields ────────────────────────
+                    "explanation":         lesson.explanation,
+                    "key_concepts":        lesson.key_concepts,
+                    "exercise":            lesson.exercise,
+                    "youtube_search":      lesson.youtube_search,
+                    "youtube_summary":     lesson.youtube_summary,
+                    "quiz_questions":      lesson.quiz_questions,
+                    # ── V5 real YouTube fields ───────────────────
+                    "youtube_url":         lesson.youtube_url,
+                    "youtube_embed":       lesson.youtube_embed,
+                    "youtube_title":       lesson.youtube_title,
+                    "youtube_channel":     lesson.youtube_channel,
+                    "youtube_duration":    lesson.youtube_duration,
+                    "youtube_duration_sec": lesson.youtube_duration_sec,
+                    "youtube_views":       lesson.youtube_views,
+                    "youtube_thumb":       lesson.youtube_thumb,
                 }).execute()
 
         log.info(f"Saved to DB: {course.id} — '{course.title}'")
-
     except Exception as e:
         log.error(f"DB save failed {course.id}: {e}")
-
     return course.id
