@@ -39,8 +39,8 @@ async def generate_course(
     if not safety.get("safe", True):
         raise ValueError(f"Topic not suitable: {safety.get('reason', 'content policy')}")
 
-    # Cache check — v5 key so old cached courses are ignored
-    cache_key = f"course:v5:{topic.lower().strip()}:{grade}:{level}:{language}:{age_group}:{exam_type or 'general'}"
+    # Cache check — v6 key forces fresh generation, ignores all old cache
+    cache_key = f"course:v6:{topic.lower().strip()}:{grade}:{level}:{language}:{age_group}:{exam_type or 'general'}"
     cached = await cache_get(cache_key)
     if cached:
         log.info(f"Cache hit: '{topic}'")
@@ -99,12 +99,6 @@ def _parse_course(
     language: str,
     age_group: str,
 ) -> CourseOutline:
-    """
-    Parse AI JSON into CourseOutline.
-    Reads ALL V4 fields: explanation, key_concepts, exercise,
-    youtube_search, youtube_summary, quiz_questions,
-    module_quiz, hands_on_project, downloadable_notes, next_steps.
-    """
     modules       = []
     total_lessons = 0
 
@@ -113,7 +107,6 @@ def _parse_course(
 
         for l_data in m_data.get("lessons", []):
 
-            # ── Read ALL lesson fields ──────────────────────────
             explanation     = str(l_data.get("explanation", ""))
             content_text    = str(l_data.get("content_text", ""))
             audio_script    = str(l_data.get("audio_script", ""))
@@ -124,41 +117,32 @@ def _parse_course(
             youtube_summary = str(l_data.get("youtube_summary", ""))
             duration        = l_data.get("duration_minutes", 20)
 
-            # key_concepts (new field)
             key_concepts = l_data.get("key_concepts", [])
-            if not isinstance(key_concepts, list):
-                key_concepts = []
+            if not isinstance(key_concepts, list): key_concepts = []
             key_concepts = [str(k) for k in key_concepts if k]
 
-            # key_points (legacy field)
             key_points = l_data.get("key_points", [])
-            if not isinstance(key_points, list):
-                key_points = []
+            if not isinstance(key_points, list): key_points = []
             key_points = [str(k) for k in key_points if k]
 
-            # quiz_questions (new field)
             quiz_questions = l_data.get("quiz_questions", [])
-            if not isinstance(quiz_questions, list):
-                quiz_questions = []
+            if not isinstance(quiz_questions, list): quiz_questions = []
             quiz_questions = [str(q) for q in quiz_questions if q]
 
-            # Use explanation as primary content, fall back to content_text
             main_content = explanation or content_text
             if len(main_content) < 50:
-                log.warning(f"Short content for '{l_data.get('title', '?')}': {len(main_content)} chars")
+                log.warning(f"Short content for '{l_data.get('title','?')}': {len(main_content)} chars")
 
             lesson = LessonContent(
                 lesson_number   = int(l_data.get("lesson_number", total_lessons + 1)),
                 title           = str(l_data.get("title", f"Lesson {total_lessons + 1}")),
                 title_np        = l_data.get("title_np", None),
-                # V4 new fields
                 explanation     = explanation,
                 key_concepts    = key_concepts,
                 exercise        = exercise,
                 youtube_search  = youtube_search,
                 youtube_summary = youtube_summary,
                 quiz_questions  = quiz_questions,
-                # Existing fields
                 content_text    = content_text or explanation,
                 audio_script    = audio_script,
                 video_script    = video_script,
@@ -169,15 +153,14 @@ def _parse_course(
             lessons.append(lesson)
             total_lessons += 1
 
-        # ── Parse module quiz ───────────────────────────────────
+        # Module quiz
         module_quiz = None
         mq_data = m_data.get("module_quiz")
         if mq_data and isinstance(mq_data, dict):
             mq_questions = []
             for q in mq_data.get("questions", []):
                 opts = q.get("options", [])
-                if not isinstance(opts, list):
-                    opts = []
+                if not isinstance(opts, list): opts = []
                 mq_questions.append(ModuleQuizQuestion(
                     question    = str(q.get("question", "")),
                     type        = str(q.get("type", "mcq")),
@@ -199,13 +182,12 @@ def _parse_course(
             module_quiz   = module_quiz,
         ))
 
-    # ── Parse hands-on project ──────────────────────────────────
+    # Hands-on project
     hands_on_project = None
     proj = raw.get("hands_on_project")
     if proj and isinstance(proj, dict) and proj.get("title"):
         steps = proj.get("steps", [])
-        if not isinstance(steps, list):
-            steps = []
+        if not isinstance(steps, list): steps = []
         hands_on_project = HandsOnProject(
             title         = str(proj.get("title", "")),
             description   = str(proj.get("description", "")),
@@ -214,15 +196,14 @@ def _parse_course(
             nepal_context = str(proj.get("nepal_context", "")),
         )
 
-    # ── Parse downloadable notes ────────────────────────────────
+    # Downloadable notes
     downloadable_notes = None
     notes = raw.get("downloadable_notes")
     if notes and isinstance(notes, dict):
         sections = []
         for sec in notes.get("sections", []):
             pts = sec.get("points", [])
-            if not isinstance(pts, list):
-                pts = []
+            if not isinstance(pts, list): pts = []
             sections.append(DownloadableNotesSection(
                 heading = str(sec.get("heading", "")),
                 points  = [str(p) for p in pts],
@@ -233,18 +214,14 @@ def _parse_course(
                 sections = sections,
             )
 
-    # ── Parse course-level fields ───────────────────────────────
     prerequisites = raw.get("prerequisites", [])
-    if not isinstance(prerequisites, list):
-        prerequisites = []
+    if not isinstance(prerequisites, list): prerequisites = []
 
     learning_outcomes = raw.get("learning_outcomes", [])
-    if not isinstance(learning_outcomes, list):
-        learning_outcomes = []
+    if not isinstance(learning_outcomes, list): learning_outcomes = []
 
     next_steps = raw.get("next_steps", [])
-    if not isinstance(next_steps, list):
-        next_steps = []
+    if not isinstance(next_steps, list): next_steps = []
 
     estimated_hours = raw.get("estimated_hours")
     if not isinstance(estimated_hours, (int, float)):
@@ -294,13 +271,18 @@ def _detect_subject(ai_subject: str, topic: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# SAVE COURSE TO DATABASE
+# SAVE COURSE TO DATABASE — ALL NEW FIELDS INCLUDED
 # ═══════════════════════════════════════════════════════════════════
 
 async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
+    """
+    Save generated course to Supabase.
+    Saves ALL V4 fields so courses load with full content every time.
+    """
     from db.client import get_db
     db = get_db()
     try:
+        # Save course record
         db.table("courses").upsert({
             "id":               course.id,
             "user_id":          user_id,
@@ -318,6 +300,7 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
             "revision_summary": course.revision_summary,
         }).execute()
 
+        # Save modules and lessons
         for module in course.modules:
             mod_id = str(uuid.uuid4())
             db.table("modules").insert({
@@ -337,7 +320,15 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
                     "lesson_number":    lesson.lesson_number,
                     "title":            lesson.title,
                     "title_np":         lesson.title_np,
+                    # ── ALL V4 NEW FIELDS ───────────────────────
                     "content_text":     lesson.explanation or lesson.content_text,
+                    "explanation":      lesson.explanation,
+                    "key_concepts":     lesson.key_concepts,
+                    "exercise":         lesson.exercise,
+                    "youtube_search":   lesson.youtube_search,
+                    "youtube_summary":  lesson.youtube_summary,
+                    "quiz_questions":   lesson.quiz_questions,
+                    # ── EXISTING FIELDS ─────────────────────────
                     "audio_script":     lesson.audio_script,
                     "video_script":     lesson.video_script,
                     "key_points":       lesson.key_concepts or lesson.key_points,
@@ -345,7 +336,9 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
                     "duration_minutes": lesson.duration_minutes,
                 }).execute()
 
-        log.info(f"Saved: {course.id} — '{course.title}'")
+        log.info(f"Saved to DB: {course.id} — '{course.title}'")
+
     except Exception as e:
         log.error(f"DB save failed {course.id}: {e}")
+
     return course.id
