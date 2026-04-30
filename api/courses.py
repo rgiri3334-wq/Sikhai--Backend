@@ -7,10 +7,6 @@ from db.client import get_db
 router = APIRouter()
 
 
-# ═══════════════════════════════════════════════════════════════════
-# GENERATE COURSE
-# ═══════════════════════════════════════════════════════════════════
-
 @router.post("/generate", response_model=CourseOutline)
 async def create_course(
     body: CourseGenerateRequest,
@@ -18,21 +14,17 @@ async def create_course(
     current_user: UserProfile = Depends(get_current_user),
 ):
     course = await generate_course(
-        topic=body.topic,
-        grade=body.grade,
-        level=body.level,
-        language=body.language,
-        age_group=getattr(body, "age_group", "millennial") or "millennial",
-        user_id=current_user.id,
-        exam_type=getattr(body, "exam_type", None),
+        topic     = body.topic,
+        grade     = body.grade,
+        level     = body.level,
+        language  = body.language,
+        age_group = getattr(body, "age_group", "millennial") or "millennial",
+        user_id   = current_user.id,
+        exam_type = getattr(body, "exam_type", None),
     )
     background_tasks.add_task(save_course_to_db, course, current_user.id)
     return course
 
-
-# ═══════════════════════════════════════════════════════════════════
-# LIST COURSES
-# ═══════════════════════════════════════════════════════════════════
 
 @router.get("/", response_model=list)
 async def list_courses(
@@ -52,10 +44,6 @@ async def list_courses(
     return result.data or []
 
 
-# ═══════════════════════════════════════════════════════════════════
-# GET SINGLE COURSE — READS ALL NEW FIELDS FROM DB
-# ═══════════════════════════════════════════════════════════════════
-
 @router.get("/{course_id}", response_model=CourseOutline)
 async def get_course(
     course_id: str,
@@ -63,7 +51,6 @@ async def get_course(
 ):
     db = get_db()
 
-    # Load course record
     course_res = db.table("courses").select("*").eq("id", course_id).single().execute()
     if not course_res.data:
         raise HTTPException(status_code=404, detail="Course not found")
@@ -71,7 +58,6 @@ async def get_course(
     if str(c["user_id"]) != current_user.id:
         raise HTTPException(status_code=403, detail="Not your course")
 
-    # Load modules
     mods_res = (
         db.table("modules")
         .select("*")
@@ -82,8 +68,6 @@ async def get_course(
 
     modules_data = []
     for m in (mods_res.data or []):
-
-        # Load lessons — select ALL columns including new V4 fields
         lessons_res = (
             db.table("lessons")
             .select("*")
@@ -95,23 +79,32 @@ async def get_course(
         lessons = []
         for l in (lessons_res.data or []):
             lessons.append({
-                "lesson_number":   l["lesson_number"],
-                "title":           l["title"],
-                "title_np":        l.get("title_np"),
-                # ── ALL V4 NEW FIELDS ───────────────────────────
-                "explanation":     l.get("explanation", ""),
-                "key_concepts":    l.get("key_concepts", []) or [],
-                "exercise":        l.get("exercise", ""),
-                "youtube_search":  l.get("youtube_search", ""),
-                "youtube_summary": l.get("youtube_summary", ""),
-                "quiz_questions":  l.get("quiz_questions", []) or [],
-                # ── EXISTING FIELDS ─────────────────────────────
-                "content_text":    l.get("content_text", ""),
-                "audio_script":    l.get("audio_script", ""),
-                "video_script":    l.get("video_script"),
-                "key_points":      l.get("key_points", []) or [],
-                "nepal_example":   l.get("nepal_example", ""),
-                "duration_minutes": l.get("duration_minutes", 20),
+                "lesson_number":       l["lesson_number"],
+                "title":               l["title"],
+                "title_np":            l.get("title_np"),
+                # ── V3 original ─────────────────────────────────
+                "content_text":        l.get("content_text", ""),
+                "audio_script":        l.get("audio_script", ""),
+                "video_script":        l.get("video_script"),
+                "key_points":          l.get("key_points", []) or [],
+                "nepal_example":       l.get("nepal_example", ""),
+                "duration_minutes":    l.get("duration_minutes", 20),
+                # ── V4 content fields ────────────────────────────
+                "explanation":         l.get("explanation", ""),
+                "key_concepts":        l.get("key_concepts", []) or [],
+                "exercise":            l.get("exercise", ""),
+                "youtube_search":      l.get("youtube_search", ""),
+                "youtube_summary":     l.get("youtube_summary", ""),
+                "quiz_questions":      l.get("quiz_questions", []) or [],
+                # ── V5 real YouTube fields ───────────────────────
+                "youtube_url":         l.get("youtube_url", ""),
+                "youtube_embed":       l.get("youtube_embed", ""),
+                "youtube_title":       l.get("youtube_title", ""),
+                "youtube_channel":     l.get("youtube_channel", ""),
+                "youtube_duration":    l.get("youtube_duration", ""),
+                "youtube_duration_sec": l.get("youtube_duration_sec", 0),
+                "youtube_views":       l.get("youtube_views", ""),
+                "youtube_thumb":       l.get("youtube_thumb", ""),
             })
 
         modules_data.append({
@@ -124,31 +117,27 @@ async def get_course(
         })
 
     return CourseOutline(
-        id               = c["id"],
-        topic            = c["topic"],
-        title            = c["title"],
-        title_np         = c.get("title_np"),
-        subject          = c.get("subject", "other"),
-        grade            = c["grade"],
-        level            = c["level"],
-        language         = c.get("language", "mixed"),
-        description      = c.get("description", ""),
-        difficulty       = c.get("difficulty", c["level"]),
-        total_modules    = c["total_modules"],
-        total_lessons    = c["total_lessons"],
-        estimated_hours  = c.get("estimated_hours", 0),
-        prerequisites    = c.get("prerequisites", []) or [],
+        id                = c["id"],
+        topic             = c["topic"],
+        title             = c["title"],
+        title_np          = c.get("title_np"),
+        subject           = c.get("subject", "other"),
+        grade             = c["grade"],
+        level             = c["level"],
+        language          = c.get("language", "mixed"),
+        description       = c.get("description", ""),
+        difficulty        = c.get("difficulty", c["level"]),
+        total_modules     = c["total_modules"],
+        total_lessons     = c["total_lessons"],
+        estimated_hours   = c.get("estimated_hours", 0),
+        prerequisites     = c.get("prerequisites", []) or [],
         learning_outcomes = c.get("learning_outcomes", []) or [],
-        next_steps       = c.get("next_steps", []) or [],
-        revision_summary = c.get("revision_summary", ""),
-        modules          = modules_data,
-        created_at       = c["created_at"],
+        next_steps        = c.get("next_steps", []) or [],
+        revision_summary  = c.get("revision_summary", ""),
+        modules           = modules_data,
+        created_at        = c["created_at"],
     )
 
-
-# ═══════════════════════════════════════════════════════════════════
-# DELETE COURSE
-# ═══════════════════════════════════════════════════════════════════
 
 @router.delete("/{course_id}", response_model=SuccessResponse)
 async def delete_course(
