@@ -260,6 +260,8 @@ class MCQOption(BaseModel):
 
 
 class QuizQuestion(BaseModel):
+    model_config = {"protected_namespaces": ()}  # Allow model_ field names
+
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question_number: int = 1
     question_type: QuizType = "mcq"
