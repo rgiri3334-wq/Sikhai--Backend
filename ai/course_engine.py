@@ -138,6 +138,28 @@ async def _enrich_with_youtube(course: CourseOutline, topic: str, grade: str, la
 # COURSE PARSER — READS ALL FIELDS FROM AI RESPONSE
 # ═══════════════════════════════════════════════════════════════════
 
+def _parse_quiz_item(q):
+    """Parse a quiz question item into a proper dict regardless of format."""
+    import json, ast
+    if isinstance(q, dict):
+        return q
+    if isinstance(q, str):
+        # Try JSON
+        try:
+            result = json.loads(q)
+            if isinstance(result, dict): return result
+        except Exception: pass
+        # Try Python literal (handles single-quote dicts from repr())
+        try:
+            result = ast.literal_eval(q)
+            if isinstance(result, dict): return result
+        except Exception: pass
+        # Plain string — treat as question text
+        return {"question": q, "type": "short_answer", "options": [], "correct": "", "explanation": ""}
+    return {"question": str(q), "type": "short_answer", "options": [], "correct": "", "explanation": ""}
+
+
+
 def _parse_course(
     raw: dict,
     topic: str,
@@ -176,7 +198,8 @@ def _parse_course(
 
             quiz_questions = l_data.get("quiz_questions", [])
             if not isinstance(quiz_questions, list): quiz_questions = []
-            quiz_questions = [str(q) for q in quiz_questions if q]
+            # Keep as dicts if objects, convert strings safely
+            quiz_questions = [_parse_quiz_item(q) for q in quiz_questions if q]
 
             lesson = LessonContent(
                 lesson_number    = int(l_data.get("lesson_number", total_lessons + 1)),
@@ -382,7 +405,7 @@ async def save_course_to_db(course: CourseOutline, user_id: str) -> str:
                     "exercise":            lesson.exercise,
                     "youtube_search":      lesson.youtube_search,
                     "youtube_summary":     lesson.youtube_summary,
-                    "quiz_questions":      lesson.quiz_questions,
+                    "quiz_questions":      lesson.quiz_questions,  # JSONB column — list of dicts
                     # ── V5 real YouTube fields ───────────────────
                     "youtube_url":         lesson.youtube_url,
                     "youtube_embed":       lesson.youtube_embed,
