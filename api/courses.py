@@ -4,6 +4,39 @@ from ai.course_engine import generate_course, save_course_to_db
 from services.auth_service import get_current_user
 from db.client import get_db
 
+
+def _parse_db_quiz_questions(val):
+    """Parse quiz_questions from DB — handles JSON array, string repr, or plain list."""
+    import json, ast
+    if not val:
+        return []
+    if isinstance(val, list):
+        result = []
+        for q in val:
+            if isinstance(q, dict):
+                result.append(q)
+            elif isinstance(q, str):
+                try:
+                    parsed = json.loads(q)
+                    result.append(parsed if isinstance(parsed, dict) else {"question": q, "type": "short_answer", "options": [], "correct": "", "explanation": ""})
+                except Exception:
+                    try:
+                        parsed = ast.literal_eval(q)
+                        result.append(parsed if isinstance(parsed, dict) else {"question": q, "type": "short_answer", "options": [], "correct": "", "explanation": ""})
+                    except Exception:
+                        result.append({"question": q, "type": "short_answer", "options": [], "correct": "", "explanation": ""})
+            else:
+                result.append({"question": str(q), "type": "short_answer", "options": [], "correct": "", "explanation": ""})
+        return result
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
 router = APIRouter()
 
 
@@ -95,7 +128,7 @@ async def get_course(
                 "exercise":            l.get("exercise", ""),
                 "youtube_search":      l.get("youtube_search", ""),
                 "youtube_summary":     l.get("youtube_summary", ""),
-                "quiz_questions":      l.get("quiz_questions", []) or [],
+                "quiz_questions":      _parse_db_quiz_questions(l.get("quiz_questions", [])),
                 # ── V5 real YouTube fields ───────────────────────
                 "youtube_url":         l.get("youtube_url", ""),
                 "youtube_embed":       l.get("youtube_embed", ""),
