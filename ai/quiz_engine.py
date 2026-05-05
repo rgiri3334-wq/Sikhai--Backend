@@ -94,7 +94,7 @@ def _parse_quiz(raw: dict, req: QuizGenerateRequest, total_marks: int, time_limi
             nepal_context=bool(q.get("nepal_context", False)),
             difficulty=req.level,
             scenario_context=q.get("scenario_context"),
-            model_answer=q.get("model_answer"),
+            scenario_answer=q.get("model_answer") or q.get("scenario_answer"),
             marking_rubric=q.get("marking_rubric"),
         ))
 
