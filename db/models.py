@@ -279,7 +279,7 @@ class QuizQuestion(BaseModel):
     difficulty: Level = "beginner"
     # Scenario-specific
     scenario_context: Optional[str] = None
-    model_answer: Optional[str] = None
+    scenario_answer: Optional[str] = None  # renamed from model_answer to avoid Pydantic namespace conflict
     marking_rubric: Optional[str] = None
 
 
