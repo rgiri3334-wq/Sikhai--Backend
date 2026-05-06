@@ -1,7 +1,11 @@
 import sys
 import time
 import logging
-import traceback
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -11,62 +15,14 @@ logging.basicConfig(
 )
 log = logging.getLogger("sikai")
 
-# ── Safe import with full traceback ──────────────────────────────
-try:
-    from api.auth import router as auth_router
-    log.info("✅ api.auth imported OK")
-except Exception as e:
-    log.error(f"❌ api.auth FAILED: {e}")
-    log.error(traceback.format_exc())
-    # Print the actual content of api/auth.py to see what's there
-    try:
-        with open("/app/api/auth.py", "r") as f:
-            content = f.read()
-        log.error(f"=== ACTUAL api/auth.py CONTENT ===\n{content}\n=== END ===")
-    except Exception as fe:
-        log.error(f"Cannot read api/auth.py: {fe}")
-    sys.exit(1)
-
-try:
-    from api.courses import router as courses_router
-    log.info("✅ api.courses imported OK")
-except Exception as e:
-    log.error(f"❌ api.courses FAILED: {e}")
-    log.error(traceback.format_exc())
-    sys.exit(1)
-
-try:
-    from api.tutor import router as tutor_router
-    log.info("✅ api.tutor imported OK")
-except Exception as e:
-    log.error(f"❌ api.tutor FAILED: {e}")
-    log.error(traceback.format_exc())
-    sys.exit(1)
-
-try:
-    from api.quiz import router as quiz_router
-    log.info("✅ api.quiz imported OK")
-except Exception as e:
-    log.error(f"❌ api.quiz FAILED: {e}")
-    log.error(traceback.format_exc())
-    sys.exit(1)
-
-try:
-    from api.progress import router as progress_router
-    log.info("✅ api.progress imported OK")
-except Exception as e:
-    log.error(f"❌ api.progress FAILED: {e}")
-    log.error(traceback.format_exc())
-    sys.exit(1)
-
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
 from config import settings
 from db.client import init_db
 from services.cache import init_cache
+from api.auth import router as auth_router
+from api.courses import router as courses_router
+from api.tutor import router as tutor_router
+from api.quiz import router as quiz_router
+from api.progress import router as progress_router
 
 
 @asynccontextmanager
