@@ -37,38 +37,67 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="सिकाइ Sikai API",
-    description="Nepal's AI-powered learning platform",
     version=settings.app_version,
     docs_url="/docs",
-    redoc_url="/redoc",
     lifespan=lifespan,
 )
 
+# ── CORS — allow ALL origins ───────────────────────────────────────
+# Security is handled by JWT tokens, not CORS origin restrictions
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
+# ── Force CORS headers on EVERY response including errors ──────────
 @app.middleware("http")
-async def add_process_time(request: Request, call_next):
+async def cors_and_timing(request: Request, call_next):
+    # Handle preflight OPTIONS immediately
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            status_code=200,
+            content={},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS,PATCH",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
+
     start = time.perf_counter()
     response = await call_next(request)
-    duration = round((time.perf_counter() - start) * 1000, 2)
-    response.headers["X-Process-Time"] = f"{duration}ms"
+    ms = round((time.perf_counter() - start) * 1000, 2)
+
+    # Force CORS headers on every response
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["X-Process-Time"] = f"{ms}ms"
     return response
 
 
+# ── Global error handler with CORS headers ─────────────────────────
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    log.error(f"Error on {request.url.path}: {exc}")
+async def global_error(request: Request, exc: Exception):
+    import traceback
+    log.error(f"Error [{request.method}] {request.url.path}: {exc}")
+    log.error(traceback.format_exc())
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error. Please try again."}
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        },
     )
 
 
@@ -79,17 +108,11 @@ app.include_router(quiz_router,     prefix="/api/v1/quiz",     tags=["Quiz"])
 app.include_router(progress_router, prefix="/api/v1/progress", tags=["Progress"])
 
 
-@app.get("/", tags=["Health"])
+@app.get("/")
 async def root():
-    return {
-        "app": settings.app_name,
-        "version": settings.app_version,
-        "status": "running",
-        "message": "नमस्ते! Sikai API is live 🇳🇵",
-        "docs": "/docs"
-    }
+    return {"status": "running", "message": "नमस्ते! Sikai API is live 🇳🇵"}
 
 
-@app.get("/health", tags=["Health"])
+@app.get("/health")
 async def health():
-    return {"status": "ok", "version": settings.app_version}
+    return {"status": "ok"}
