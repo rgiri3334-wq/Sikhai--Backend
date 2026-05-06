@@ -102,7 +102,7 @@ async def register_user(
 
 async def login_user(email: str, password: str) -> dict:
     db = get_db()
-    r = db.table("users").select("*").eq("email", email).single().execute()
+    r = db.table("users").select("*").eq("id", user_id).single().execute()
     if not r.data:
         raise HTTPException(status_code=401, detail="Invalid email or password")
     u = r.data
