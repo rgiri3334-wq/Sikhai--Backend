@@ -90,7 +90,7 @@ class LessonContent(BaseModel):
     youtube_thumb: str = ""      # Thumbnail URL from YouTube
 
     # ── V4 quiz fields ─────────────────────────────────────────
-    quiz_questions: List[str] = []
+    quiz_questions: List[Any] = []
 
     @property
     def main_content(self) -> str:
